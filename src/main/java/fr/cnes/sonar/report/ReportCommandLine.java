@@ -21,6 +21,7 @@ import fr.cnes.sonar.report.exceptions.BadExportationDataTypeException;
 import fr.cnes.sonar.report.exceptions.BadSonarQubeRequestException;
 import fr.cnes.sonar.report.exceptions.SonarQubeException;
 import fr.cnes.sonar.report.exceptions.UnknownQualityGateException;
+import fr.cnes.sonar.report.factory.ProviderFactory;
 import fr.cnes.sonar.report.factory.ReportFactory;
 import fr.cnes.sonar.report.factory.ReportModelFactory;
 import fr.cnes.sonar.report.factory.ServerFactory;
@@ -28,12 +29,16 @@ import fr.cnes.sonar.report.model.Report;
 import fr.cnes.sonar.report.model.SonarQubeServer;
 import fr.cnes.sonar.report.utils.ReportConfiguration;
 import fr.cnes.sonar.report.utils.StringManager;
+import fr.cnes.sonar.report.factory.StandaloneProviderFactory;
+import fr.cnes.sonar.report.factory.PluginProviderFactory;
 import org.apache.poi.openxml4j.exceptions.OpenXML4JException;
 import org.apache.xmlbeans.XmlException;
+import org.sonarqube.ws.client.WsClient;
 
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.text.ParseException;
 import java.util.logging.Level;
 import java.util.logging.LogManager;
 import java.util.logging.Logger;
@@ -57,7 +62,7 @@ public final class ReportCommandLine {
     }
 
     /** Logger of this class */
-    private static final Logger LOGGER = Logger.getLogger(ReportFactory.class.getName());
+    private static final Logger LOGGER = Logger.getLogger(ReportCommandLine.class.getName());
 
     /**
      * Private constructor to not be able to instantiate it.
@@ -74,18 +79,19 @@ public final class ReportCommandLine {
         // main catches all exceptions
         try {
             // We use different method because it can be called outside main (for example, in from ReportSonarPlugin)
-            execute(args);
+            execute(args, null);
 
         } catch (BadExportationDataTypeException | BadSonarQubeRequestException | IOException |
-                UnknownQualityGateException | OpenXML4JException | XmlException | SonarQubeException | IllegalStateException e) {
+                UnknownQualityGateException | OpenXML4JException | XmlException | SonarQubeException |
+                IllegalStateException | IllegalArgumentException | ParseException e) {
             // it logs all the stack trace
             LOGGER.log(Level.SEVERE, e.getMessage(), e);
             System.exit(-1);
         }
     }
 
-    public static void execute(final String[] args) throws BadExportationDataTypeException , BadSonarQubeRequestException , IOException,
-    UnknownQualityGateException, OpenXML4JException, XmlException, SonarQubeException{
+    public static void execute(final String[] args, final WsClient wsClient) throws BadExportationDataTypeException , BadSonarQubeRequestException , IOException,
+    UnknownQualityGateException, OpenXML4JException, XmlException, SonarQubeException, ParseException {
         // Log message.
         String message;
 
@@ -99,22 +105,26 @@ public final class ReportCommandLine {
         // assumes the language is set with language_country
         StringManager.changeLocale(conf.getLanguage());
 
-        // Display version information and exit.
-        if(conf.isVersion()) {
-            final String name = ReportCommandLine.class.getPackage().getImplementationTitle();
-            final String version = ReportCommandLine.class.getPackage().getImplementationVersion();
-            final String vendor = ReportCommandLine.class.getPackage().getImplementationVendor();
-            message = String.format("%s %s by %s", name, version, vendor);
-            LOGGER.info(message);
-            System.exit(0);
+        // format server URL
+        String url = conf.getServer();
+        if(url.endsWith("/")) {
+            url = url.substring(0, url.length() - 1);
         }
 
         // Print information about SonarQube.
-        message = String.format("SonarQube URL: %s", conf.getServer());
+        message = String.format("SonarQube URL: %s", url);
         LOGGER.info(message);
 
+        // Instantiate a ProviderFactory depending on the execution mode of the application
+        ProviderFactory providerFactory;
+        if (wsClient == null) {
+            providerFactory = new StandaloneProviderFactory(url, conf.getToken(), conf.getProject(), conf.getBranch());
+        } else {
+            providerFactory = new PluginProviderFactory(conf.getProject(), conf.getBranch(), wsClient);
+        }
+
         // Initialize connexion with SonarQube and retrieve primitive information
-        final SonarQubeServer server = new ServerFactory(conf.getServer(), conf.getToken()).create();
+        final SonarQubeServer server = new ServerFactory(url, providerFactory).create();
 
         message = String.format("SonarQube online: %s", server.isUp());
         LOGGER.info(message);
@@ -131,7 +141,7 @@ public final class ReportCommandLine {
         }
 
         // Generate the model of the report.
-        final Report model = new ReportModelFactory(server, conf).create();
+        final Report model = new ReportModelFactory(conf.getProject(), conf.getBranch(), conf.getAuthor(), conf.getDate(), providerFactory).create();
         // Generate results files.
         ReportFactory.report(conf, model);
 

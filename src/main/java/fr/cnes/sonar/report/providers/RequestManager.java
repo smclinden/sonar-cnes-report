@@ -17,16 +17,23 @@
 
 package fr.cnes.sonar.report.providers;
 
-import fr.cnes.sonar.report.exceptions.BadSonarQubeRequestException;
-import fr.cnes.sonar.report.exceptions.SonarQubeException;
-import fr.cnes.sonar.report.utils.StringManager;
+import java.net.InetSocketAddress;
+import java.net.Proxy;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+
 import org.apache.commons.lang3.StringUtils;
 import org.sonarqube.ws.client.GetRequest;
 import org.sonarqube.ws.client.HttpConnector;
 import org.sonarqube.ws.client.WsResponse;
 
-import java.net.InetSocketAddress;
-import java.net.Proxy;
+import com.google.common.collect.Sets;
+
+import fr.cnes.sonar.report.exceptions.BadSonarQubeRequestException;
+import fr.cnes.sonar.report.exceptions.SonarQubeException;
+import fr.cnes.sonar.report.utils.StringManager;
 
 /**
  * Manage http requests.
@@ -58,6 +65,14 @@ public final class RequestManager {
     public static final String STR_PROXY_PASS = "https.proxyPassword";
 
     /**
+     * System property for non proxy hosts
+     */
+    public static final String STR_NON_PROXY_HOSTS = "http.nonProxyHosts";
+    
+    public static final String QUERY_CHAR = "?";
+    public static final String ANCHOR_CHAR = "#";
+
+    /**
      * Use of private constructor to singletonize this class
      */
     private RequestManager() { }
@@ -74,6 +89,25 @@ public final class RequestManager {
     }
 
     /**
+     * Return the baseUrl from a string URL
+     * @return the baseUrl as string
+     */
+    private static String extractBaseUrl(String url) {
+      if (url != null) {
+        int queryPosition = url.indexOf(QUERY_CHAR);
+        if (queryPosition <= 0) {
+          queryPosition = url.indexOf(ANCHOR_CHAR);
+        }
+
+        if (queryPosition >= 0) {
+          url = url.substring(0, queryPosition);
+        }
+      }
+       
+      return StringUtils.substringBeforeLast(url, "/");
+    }
+
+    /**
      * Execute a get http request
      * @param url server to request
      * @param token token to authenticate to SonarQube
@@ -83,12 +117,13 @@ public final class RequestManager {
      */
     public String get(final String url, final String token) throws SonarQubeException, BadSonarQubeRequestException {
         // Initialize connexion information.
-        final String baseUrl = StringUtils.substringBeforeLast(url, "/");
-        final String path = StringUtils.substringAfterLast(url, "/");
+        final String baseUrl = extractBaseUrl(url);
+        final String path = url.replace(baseUrl, "");
         final String proxyHost = System.getProperty(STR_PROXY_HOST, StringManager.EMPTY);
         final String proxyPort = System.getProperty(STR_PROXY_PORT, StringManager.EMPTY);
         final String proxyUser = System.getProperty(STR_PROXY_USER, StringManager.EMPTY);
         final String proxyPass = System.getProperty(STR_PROXY_PASS, StringManager.EMPTY);
+        final String nonProxyHosts = System.getProperty(STR_NON_PROXY_HOSTS, StringManager.EMPTY);
 
         // Initialize http connector builder.
         final HttpConnector.Builder builder = HttpConnector.newBuilder()
@@ -101,7 +136,7 @@ public final class RequestManager {
         }
 
         // Set proxy settings.
-        if(!proxyHost.isEmpty()) {
+        if(!proxyHost.isEmpty() && !avoidProxy(nonProxyHosts, baseUrl)) {
             int proxyUsedPort;
             try {
                 proxyUsedPort = Integer.valueOf(proxyPort);
@@ -134,9 +169,66 @@ public final class RequestManager {
             case 403:
                 throw new BadSonarQubeRequestException("Insufficient privileges error sent by SonarQube server (code 403), please check your permissions in SonarQube configuration.");
             case 404:
-                throw new BadSonarQubeRequestException("Unknown URL error sent by SonarQube server (code 404), please check cnesreport compatibility with your SonarQube server version.");
+                throw new BadSonarQubeRequestException(String.format("Not found error sent by SonarQube server (code 404, URL %s, Error %s), please check cnesreport compatibility with your SonarQube server version.",response.requestUrl(), response.content()));
+            default:
+                break;
         }
 
         return response.content();
     }
+    
+    /**
+     * Validate if should avoid proxy
+     * @param nonProxyHosts non proxy hosts according to http.nonProxyHost property, example: localhost|127.*|[::1]
+     * @param url	url as String
+     * @return indicates whether to avoid proxy usage
+     * @throws SonarQubeException When cannot parse url to URI
+     */
+    private boolean avoidProxy(String nonProxyHosts, String url) throws SonarQubeException {
+
+        boolean shouldAvoid;
+        
+    	if(url == null || url.isEmpty()) {
+            shouldAvoid = false;
+        } else {
+            String strUriHost;
+    	
+            try {
+                strUriHost = new URI(url).getHost();
+            } catch (URISyntaxException e) {
+                throw new SonarQubeException("Impossible parse url to URI.", e);
+            }
+            
+            String regex = Sets.newHashSet(nonProxyHosts.split("\\|"))
+                .stream()
+                .filter(nps -> !nps.isEmpty())
+                .map(this::disjunctToRegex).collect(Collectors.joining("|"));
+            
+            Pattern pattern = Pattern.compile(regex);
+            
+            shouldAvoid = pattern != null && pattern.matcher(strUriHost).matches();
+        }
+
+    	return shouldAvoid;        
+    }
+    
+    /**
+     * Transform nonProxyHosts from its native format to the java regex one
+     * @param disjunct The nonProxyHosts env variable in native format
+     * @return The nonProxyHosts env variable in java regex format
+     */
+    private String disjunctToRegex(String disjunct) {
+        String regex;
+        if (disjunct.startsWith("*") && disjunct.endsWith("*")) {
+            regex = ".*" + Pattern.quote(disjunct.substring(1, disjunct.length() - 1)) + ".*";
+        } else if (disjunct.startsWith("*")) {
+            regex = ".*" + Pattern.quote(disjunct.substring(1));
+        } else if (disjunct.endsWith("*")) {
+            regex = Pattern.quote(disjunct.substring(0, disjunct.length() - 1)) + ".*";
+        } else {
+            regex = Pattern.quote(disjunct);
+        }
+        return regex;
+    }
+    
 }

@@ -17,22 +17,27 @@
 
 package fr.cnes.sonar.report.exporters.docx;
 
-import fr.cnes.sonar.report.model.Facet;
+import fr.cnes.sonar.report.model.Facets;
+import fr.cnes.sonar.report.model.TimeFacets;
 import fr.cnes.sonar.report.model.Value;
+import fr.cnes.sonar.report.model.TimeValue;
 import fr.cnes.sonar.report.utils.StringManager;
 import org.apache.poi.openxml4j.exceptions.InvalidFormatException;
 import org.apache.poi.openxml4j.exceptions.OpenXML4JException;
-import org.apache.poi.ss.util.ImageUtils;
 import org.apache.poi.xwpf.usermodel.*;
+import org.apache.poi.util.Units;
 import org.apache.xmlbeans.XmlException;
 
-import java.awt.*;
+import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import javax.imageio.ImageIO;
 
 /**
  * Different tools to manipulate docx
@@ -56,6 +61,14 @@ public final class DocXTools {
      */
     private static final String CHART_TYPE_TITLE = "chart.type.title";
     /**
+     * title for chart displaying the evolution of the number of issues
+     */
+    private static final String CHART_VIOLATIONS_TITLE = "chart.violations.title";
+    /**
+     * title for chart displaying the evolution of the technical debt ratio
+     */
+    private static final String CHART_TECHNICAL_DEBT_RATIO_TITLE = "chart.technicalDebtRatio.title";
+    /**
      * placeholder for chart displaying number of issues by severity
      */
     private static final String TYPE_TABLE_PLACEHOLDER = "$TYPE";
@@ -64,6 +77,14 @@ public final class DocXTools {
      */
     private static final String SEVERITY_TABLE_PLACEHOLDER = "$SEVERITY";
     /**
+     * placeholder for chart displaying issues history
+     */
+    private static final String VIOLATIONS_CHART_PLACEHOLDER = "$VIOLATIONS";
+    /**
+     * placeholder for chart displaying technical debt ratio history
+     */
+    private static final String TECHNICAL_DEBT_RATIO_CHART_PLACEHOLDER = "$TECHNICAL_DEBT_RATIO";
+    /**
      * facet's name for number of issues by severity
      */
     private static final String SEVERITIES = "severities";
@@ -71,6 +92,14 @@ public final class DocXTools {
      * facet's name for number of issues by type
      */
     private static final String TYPES = "types";
+    /**
+     * facet's name for issues history
+     */
+    private static final String VIOLATIONS = "violations";
+    /**
+     * facet's name for technical debt ratio history
+     */
+    private static final String TECHNICAL_DEBT_RATIO = "sqale_debt_ratio";
 
     /**
      * Private constructor to hide the public one
@@ -84,16 +113,19 @@ public final class DocXTools {
      * @throws IOException ...
      * @throws XmlException ...
      */
-    public static void fillCharts(XWPFDocument document, List<Facet> facets)
+    public static void fillCharts(XWPFDocument document, Facets facets, TimeFacets timeFacets)
             throws IOException, XmlException {
 
         final List<XWPFChartSpace> chartSpaces = XWPFChartSpace.getChartSpaces(document);
-        final List<Value> dataPerType = DataAdapter.getFacetValues(facets, TYPES);
-        final List<Value> dataPerSeverity = DataAdapter.getFacetValues(facets, SEVERITIES);
+        final List<Value> dataPerType = facets.getFacetValues(TYPES);
+        final List<Value> dataPerSeverity = facets.getFacetValues(SEVERITIES);
+        final List<TimeValue> issuesHistory = timeFacets.getFacetValues(VIOLATIONS);
+        final List<TimeValue> technicalDebtRatioHistory = timeFacets.getFacetValues(TECHNICAL_DEBT_RATIO);
 
         // browse chart list to find placeholders (based on locale) in title
         // and provide them adapted resources
         for (XWPFChartSpace chartSpace : chartSpaces) {
+        	
             final String currentChartTitle = chartSpace.getTitle();
             // fill the pie chart with issues count by severity
             if(currentChartTitle.contains(SEVERITY_TABLE_PLACEHOLDER)) {
@@ -103,8 +135,18 @@ public final class DocXTools {
             } else if(currentChartTitle.contains(TYPE_TABLE_PLACEHOLDER)) {
                 chartSpace.setValues(dataPerType);
                 chartSpace.setTitle(StringManager.string(CHART_TYPE_TITLE));
+            // fill the scatter chart with the evolution of the number of issues
+            } else if(currentChartTitle.contains(VIOLATIONS_CHART_PLACEHOLDER)) {
+                chartSpace.setTimeValues(issuesHistory);
+                chartSpace.setTitle(StringManager.string(CHART_VIOLATIONS_TITLE));
+            // fill the scatter chart with the evolution of the technical debt ratio
+            } else if(currentChartTitle.contains(TECHNICAL_DEBT_RATIO_CHART_PLACEHOLDER)) {
+                chartSpace.setTimeValues(technicalDebtRatioHistory);
+                chartSpace.setTitle(StringManager.string(CHART_TECHNICAL_DEBT_RATIO_TITLE));
             }
+
         }
+        
     }
 
     /**
@@ -202,8 +244,11 @@ public final class DocXTools {
         return elements;
     }
 
+ 
+
     /**
-     * Replace placeholders inside a paragraph by values given in a map
+     * Replace placeholders inside a paragraph by values given in a map.
+     * Conserve word style.
      * @param paragraph paragraph to modify, style will be the default paragraph style
      * @param values a map indexed by placeholders
      * @throws IOException When opening pictures
@@ -211,65 +256,73 @@ public final class DocXTools {
      */
     private static void replaceInParagraph(XWPFParagraph paragraph, Map<String,String> values)
             throws IOException, InvalidFormatException {
-        // Concatenate all runs' content in a single string
-        final StringBuilder sb = new StringBuilder();
+        
+        
         final List<XWPFRun> runs = paragraph.getRuns();
-        int pos;
-        for (XWPFRun r : runs){
-            pos = r.getTextPosition();
-            if(r.getText(pos) != null) {
-                sb.append(r.getText(pos));
+         String text;
+        final List<String> pictures = new ArrayList<>();
+        String key;
+        String value;
+        ClassLoader classloader;
+        InputStream is;
+        BufferedImage image;
+        ByteArrayOutputStream baos;
+        ByteArrayInputStream bais;
+        // For all Run
+        for (XWPFRun currentRun : runs){
+            // if there are matter to work on
+            if(currentRun.getText(0) != null) {            
+
+                // construct here the new string by replacing each placeholder by its value
+                text = currentRun.getText(0);
+                
+                pictures.clear();
+                for (Map.Entry<String, String> nextValue : values.entrySet()) {
+                    key = nextValue.getKey();
+                    value = nextValue.getValue();
+
+                    // if we try to replace by a png picture
+                    if(value.endsWith(PNG_EXTENSION) && text.contains(key)) {
+                        // we save the filename
+                        pictures.add(value);
+                        value = StringManager.EMPTY;
+                    }
+                    // finally we concatenate
+                    text = text.replaceAll(key, value);
+                }
+                // Replace le text
+                currentRun.setText(text,0);
+
+                // add images if we have something to add
+                if(!pictures.isEmpty()) {
+                    // browse picture list previously filled out
+                    for(String filename : pictures) {
+                        // get the image from resources as an input stream
+                        classloader = DocXTools.class.getClassLoader();
+                        is = classloader.getResourceAsStream(IMG_FOLDER + filename);
+                        // convert the input stream to a buffered image
+                        image = ImageIO.read(is);
+                        // close the input stream
+                        is.close();
+                        // retrieve image dimensions
+                        int width = image.getWidth();
+                        int height = image.getHeight();
+                        // ratio for dimensions shrinking
+                        double ratio = 0.25;
+                        // write the buffered image on a byte array output stream
+                        baos = new ByteArrayOutputStream();
+                        ImageIO.write(image, "png", baos);
+                        // create a byte array input stream from the previous stream
+                        bais = new ByteArrayInputStream(baos.toByteArray());
+                        // add the image to the run
+                        currentRun.addPicture(bais, Document.PICTURE_TYPE_PNG,
+                                filename, Units.toEMU(width*ratio), Units.toEMU(height*ratio));
+                    }
+                }
             }
         }
 
-        // if there are matter to work on
-        if(sb.length()!=0) {
-            // delete all runs to replace it by one single run
-            for(int i = runs.size() - 1; i >= 0; i--) {
-                paragraph.removeRun(i);
-            }
 
-            // construct here the new string by replacing each placeholder by its value
-            String text = sb.toString();
-            final List<String> pictures = new ArrayList<>();
-            String key;
-            String value;
-            for (Map.Entry<String, String> nextValue : values.entrySet()) {
-                key = nextValue.getKey();
-                value = nextValue.getValue();
-
-                // if we try to replace by a png picture
-                if(value.endsWith(PNG_EXTENSION) && text.contains(key)) {
-                    // we save the filename
-                    pictures.add(value);
-                    value = StringManager.EMPTY;
-                }
-                // finally we concatenate
-                text = text.replaceAll(key, value);
-            }
-
-            // Add new run with updated text
-            final XWPFRun run = paragraph.createRun();
-            run.setText(text);
-            // add images if we have something to add
-            if(!pictures.isEmpty()) {
-                // browse picture list previously filled out
-                ClassLoader classloader;
-                InputStream is;
-                Dimension dim;
-                for(String filename : pictures) {
-                    classloader = Thread.currentThread().getContextClassLoader();
-                    is = classloader.getResourceAsStream(IMG_FOLDER +filename);
-                    // height and width are retrieve from here
-                    dim = ImageUtils.getImageDimension(is, XWPFDocument.PICTURE_TYPE_PNG);
-                    run.addPicture(is, XWPFDocument.PICTURE_TYPE_PNG,
-                            filename, dim.width, dim.height);
-                    // close picture
-                    is.close();
-                }
-            }
-            paragraph.addRun(run);
-        }
     }
 
     /**
@@ -286,7 +339,7 @@ public final class DocXTools {
                                  List<List<String>> data, String name) {
 
         // if there are no resources, there a
-        if(data!=null && !data.isEmpty()) {
+        if(data!=null) {
             // table to fill out
             XWPFTable table = null;
 
@@ -302,39 +355,38 @@ public final class DocXTools {
                 }
             }
 
-            // if the table does not exist, we create one at the bottom of the document
-            if (!found) {
-                table = document.createTable();
-            // otherwise we clear the table
-            } else {
-                if(table!=null) {
-                    for (int i = table.getNumberOfRows() - 1; i >= 0; --i) {
+            // if the table does not exist don't fill
+            if (found) {
+                // we clear the table                
+            	for (int i = table.getNumberOfRows() - 1; i >= 0; --i) {
                         table.removeRow(i);
-                    }
+                
                 }
-            }
-
-            // create the top line (header) and fill it
-            XWPFTableRow row = table.createRow();
-            for(String field : header) {
-                row.createCell().setText(field);
-            }
-
-            // create resources rows
-            for(int i = 0 ; i < data.size() ; i++) {
-                table.createRow();
-            }
-
-            // fill resources rows
-            for(int iLine = 0 ; iLine < data.size() ; iLine++) {
-                row = table.getRow(iLine+1);
-                final List<String> line = data.get(iLine);
-
-                for (int iCell = 0; iCell < line.size(); iCell++) {
-                    if(iCell>=row.getTableCells().size()) {
-                        row.createCell();
+	            
+                if (!data.isEmpty()) {
+                    // create the top line (header) and fill it
+                    XWPFTableRow row = table.createRow();
+                    for(String field : header) {
+                        row.createCell().setText(field);
+	                }
+	
+                    // create resources rows
+                    for(int i = 0 ; i < data.size() ; i++) {
+                        table.createRow();
                     }
-                    row.getCell(iCell).setText(line.get(iCell));
+        
+                    // fill resources rows
+                    for(int iLine = 0 ; iLine < data.size() ; iLine++) {
+                        row = table.getRow(iLine+1);
+                        final List<String> line = data.get(iLine);
+        
+                        for (int iCell = 0; iCell < line.size(); iCell++) {
+                            if(iCell>=row.getTableCells().size()) {
+                                row.createCell();
+                            }
+                            row.getCell(iCell).setText(line.get(iCell));
+                        }
+                    }
                 }
             }
         }

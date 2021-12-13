@@ -26,6 +26,8 @@ import java.util.Properties;
 import java.util.ResourceBundle;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.Map;
+import java.util.HashMap;
 
 /**
  * Public class which contains all public String used by internal classes
@@ -38,6 +40,8 @@ public final class StringManager {
     public static final String TAB = "\t";
     /** Just a space. */
     public static final String SPACE = " ";
+    /** Placeholder for no-branch. */
+    public static final String NO_BRANCH = "%";
     /** Just a space for URI. */
     public static final String URI_SPACE = "%20";
     /** Name for properties' file about report. */
@@ -50,12 +54,18 @@ public final class StringManager {
     public static final String ISSUES_OVERFLOW_MSG = "log.overflow.msg";
     /** Pattern to format the date. */
     public static final String DATE_PATTERN = "yyyy-MM-dd";
+    /** Regular expression to match exactly the date format */
+    public static final String DATE_REGEX = "[0-9]{4}-[0-9]{2}-[0-9]{2}";
     /** Default path to the target diretory for report files. */
     public static final String DEFAULT_OUTPUT = "report.path";
     /** Default language for the report. */
     public static final String DEFAULT_LANGUAGE = "report.locale";
     /** Default name for the author. */
     public static final String DEFAULT_AUTHOR = "report.author";
+    /** The only severity decided by us for the hotspot security */
+    public static final String HOTSPOT_SEVERITY = "CRITICAL";
+     /** Security hotspot type (different from issue type) */
+    public static final String HOTSPOT_TYPE = "SECURITY_HOTSPOT";
 
     /** Logger for StringManager. */
     private static final Logger LOGGER = Logger.getLogger(StringManager.class.getCanonicalName());
@@ -66,11 +76,13 @@ public final class StringManager {
     /** Contains internationalized fields. */
     private static ResourceBundle messages;
 
-    /** Define the language of the program. */
-    private static Locale currentLocale;
-
     /** Unique instance of this class (singleton). */
     private static StringManager ourInstance = null;
+
+    /**
+     * List of possible security hotspot categories
+     */
+    private static final Map<String, String> SECURITY_HOTSPOT_CATEGORIES = new HashMap<>();
 
     //
     // Static initialization block for reading .properties
@@ -105,6 +117,9 @@ public final class StringManager {
 
         // load internationalized strings, default is defined in the properties file
         changeLocale(properties.getProperty(DEFAULT_LANGUAGE));
+
+        // initialize security hotspots categories
+        initSecurityHotspotsCategories();
     }
 
     /**
@@ -141,7 +156,7 @@ public final class StringManager {
      */
     public static synchronized void changeLocale(final String language, final String country) {
         // change locale
-        currentLocale = new Locale(language,country);
+        Locale currentLocale = new Locale(language,country);
         // reload messages
         messages = ResourceBundle.getBundle("messages", currentLocale);
     }
@@ -156,7 +171,7 @@ public final class StringManager {
         try {
             changeLocale(locale[0], locale[1]);
         } catch (ArrayIndexOutOfBoundsException e) {
-            LOGGER.log(Level.SEVERE, "Unable to change the locale due to malformed command line parameter : " + language, e);
+            LOGGER.log(Level.SEVERE, e, () -> "Unable to change the locale due to malformed command line parameter : " + language);
         }
     }
 
@@ -169,5 +184,38 @@ public final class StringManager {
         return messages.getString(key);
     }
 
+    /**
+     * Initialize security hotspots categories
+     */
+    public static void initSecurityHotspotsCategories() {
+        SECURITY_HOTSPOT_CATEGORIES.put("buffer-overflow", "Buffer Overflow");
+        SECURITY_HOTSPOT_CATEGORIES.put("sql-injection", "SQL Injection");
+        SECURITY_HOTSPOT_CATEGORIES.put("rce", "Code Injection (RCE)");
+        SECURITY_HOTSPOT_CATEGORIES.put("object-injection", "Object Injection");
+        SECURITY_HOTSPOT_CATEGORIES.put("command-injection", "Command Injection");
+        SECURITY_HOTSPOT_CATEGORIES.put("path-traversal-injection", "Path Traversal Injection");
+        SECURITY_HOTSPOT_CATEGORIES.put("ldap-injection", "LDAP Injection");
+        SECURITY_HOTSPOT_CATEGORIES.put("xpath-injection", "XPath Injection");
+        SECURITY_HOTSPOT_CATEGORIES.put("log-injection", "Log Injection");
+        SECURITY_HOTSPOT_CATEGORIES.put("xxe", "XML External Entity (XXE)");
+        SECURITY_HOTSPOT_CATEGORIES.put("xss", "Cross-Site Scripting (XSS)");
+        SECURITY_HOTSPOT_CATEGORIES.put("dos", "Denial of Service (DoS)");
+        SECURITY_HOTSPOT_CATEGORIES.put("ssrf", "Server-Side Request Forgery (SSRF)");
+        SECURITY_HOTSPOT_CATEGORIES.put("csrf", "Cross-Site Request Forgery (CSRF)");
+        SECURITY_HOTSPOT_CATEGORIES.put("http-response-splitting", "HTTP Response Splitting");
+        SECURITY_HOTSPOT_CATEGORIES.put("open-redirect", "Open Redirect");
+        SECURITY_HOTSPOT_CATEGORIES.put("weak-cryptography", "Weak Cryptography");
+        SECURITY_HOTSPOT_CATEGORIES.put("auth", "Authentication");
+        SECURITY_HOTSPOT_CATEGORIES.put("insecure-conf", "Insecure Configuration");
+        SECURITY_HOTSPOT_CATEGORIES.put("file-manipulation", "File Manipulation");
+        SECURITY_HOTSPOT_CATEGORIES.put("others", "Others");
+    }
 
+    /**
+     * Return a map containing the security hotspots categories names associated to their key
+     * @return the map
+     */
+    public static Map<String,String> getSecurityHotspotsCategories() {
+        return SECURITY_HOTSPOT_CATEGORIES;
+    }
 }
